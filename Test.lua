@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.100 starting...")
+print("[SeedFarm] v10.103 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -963,7 +963,53 @@ local function teleportToSelected()
     pcall(function()
         pos = selectedSeed.model:GetPivot().Position
     end)
-    root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    if areaFarm.approachByRun then
+        -- Halloween farm run-in (v10.103, Daniel's ask): walk to the
+        -- seed on foot instead of teleporting, then fall through to
+        -- the same prompt + confirm flow below.
+        local hum = getHumanoid()
+        local savedSpd = hum and hum.WalkSpeed
+        print("[SeedFarm] halloween farm: running to " .. selectedSeed.name)
+        local t0 = os.clock()
+        local lastP = root.Position
+        while true do
+            task.wait(0.25)
+            if not stillAlive() then return "Died en route!" end
+            if not (selectedSeed.model and selectedSeed.model.Parent) then
+                if savedSpd then
+                    pcall(function() hum.WalkSpeed = savedSpd end)
+                end
+                return "Seed is gone!"
+            end
+            root = getRoot()
+            hum = getHumanoid()
+            if root and hum then
+                pcall(function()
+                    pos = selectedSeed.model:GetPivot().Position
+                end)
+                local d = (root.Position - pos).Magnitude
+                if d <= 7 then break end
+                if os.clock() - t0 > 120 then
+                    if savedSpd then
+                        pcall(function() hum.WalkSpeed = savedSpd end)
+                    end
+                    return "Run to seed timed out!"
+                end
+                pcall(function() hum.WalkSpeed = RUN_SPEED end)
+                if (root.Position - lastP).Magnitude < 0.5 then
+                    pcall(function() hum.Jump = true end)
+                end
+                lastP = root.Position
+                hum:MoveTo(pos)
+            else
+                task.wait(0.5)
+            end
+        end
+        if savedSpd then pcall(function() hum.WalkSpeed = savedSpd end) end
+        print("[SeedFarm] halloween farm: at the seed")
+    else
+        root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    end
     lastTeleportAt = os.clock()
     task.wait(0.2)
     -- instant prompt pickup (skip if no prompt: touch/manual item)
@@ -1100,7 +1146,7 @@ local function teleportToSelected()
         lastPickupHalloween = (selectedSeed.source == "halloween")
         lastPickupHalloweenAt = os.clock()
         if lastPickupHalloween then
-            print("[SeedFarm] halloween pickup - delivery will teleport")
+            print("[SeedFarm] halloween pickup - delivery will fly")
         end
         return "Got " .. selectedSeed.name .. "!"
     elseif modelGone then
@@ -1181,6 +1227,9 @@ local function runToSafeZone()
         end
         savedSpeed = humanoid.WalkSpeed
         local deliverySeqAtStart = lastDeliverySeq
+        local flyMode = false -- halloween delivery flies (v10.103)
+        local cruiseY = nil
+        local flyPhase = "rise"
         local lastVacuum = 0
         local vacuumFired = {}
         -- run target: pin if set, otherwise the default safe zone
@@ -1218,7 +1267,8 @@ local function runToSafeZone()
                 }
                 target = hwTargets[1].pos
                 dist = (root.Position - target).Magnitude
-                print("[SeedFarm] halloween delivery: walking to "
+                flyMode = true
+                print("[SeedFarm] halloween delivery: flying to "
                     .. hwTargets[1].label .. " (teleport does not bank)")
             end
         end
@@ -1226,7 +1276,7 @@ local function runToSafeZone()
         -- move on the very first frame: speed up, hop to unstick, go
         pcall(function() humanoid.WalkSpeed = RUN_SPEED end)
         pcall(function() humanoid.Jump = true end)
-        humanoid:MoveTo(target)
+        if not flyMode then humanoid:MoveTo(target) end
         local lastPos = root.Position
         local startTime = os.clock()
         local lastLog = 0
@@ -1253,7 +1303,43 @@ local function runToSafeZone()
                 -- guardian-tuning dump: patrol 26-90, response up to 90,
                 -- chase at least 1.07x your speed, so the old 8-stud dodge
                 -- was already caught. Veer starts at 30, hardens inside 15.)
+                -- flight (v10.103, halloween delivery): rise above
+                -- guardian reach, cruise to above the safe zone (the
+                -- light beacon), then drop in. The root's CFrame steps
+                -- toward the waypoint each tick at RUN_SPEED.
+                if flyMode then
+                    if not cruiseY then
+                        cruiseY = math.max(root.Position.Y, target.Y) + 70
+                    end
+                    local horiz = Vector3.new(target.X - root.Position.X,
+                        0, target.Z - root.Position.Z).Magnitude
+                    local wp
+                    if flyPhase == "rise" then
+                        wp = Vector3.new(root.Position.X, cruiseY,
+                            root.Position.Z)
+                        if cruiseY - root.Position.Y < 2 then
+                            flyPhase = "cruise"
+                        end
+                    elseif flyPhase == "cruise" then
+                        wp = Vector3.new(target.X, cruiseY, target.Z)
+                        if horiz < 3 then flyPhase = "descend" end
+                    else
+                        wp = Vector3.new(target.X, target.Y + 2, target.Z)
+                    end
+                    local delta = wp - root.Position
+                    local step = math.max(30, RUN_SPEED) * 0.1
+                    local newPos = wp
+                    if delta.Magnitude > step then
+                        newPos = root.Position + delta.Unit * step
+                    end
+                    pcall(function()
+                        root.CFrame = CFrame.new(newPos)
+                            * (root.CFrame - root.CFrame.Position)
+                        root.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                end
                 local moveTarget = target
+                if not flyMode then
                 local g, gDist = nearestGuardian(root.Position)
                 if g and gDist < 30 then
                     local awayDir = Vector3.new(root.Position.X - g.pos.X, 0, root.Position.Z - g.pos.Z)
@@ -1267,11 +1353,12 @@ local function runToSafeZone()
                     moveTarget = root.Position + detourDir.Unit * 40
                     moveTarget = Vector3.new(moveTarget.X, root.Position.Y, moveTarget.Z)
                 end
+                end -- not flyMode: guardian detour is ground-only
                 -- runback vacuum (v10.88): auto-collect collectible drops
                 -- within reach while passing - no detour, no teleport.
                 -- findWildSeeds is throttled to 1.5s and each prompt fires
                 -- at most once per run.
-                if vacuumOn and fireproximityprompt
+                if not flyMode and vacuumOn and fireproximityprompt
                     and os.clock() - lastVacuum > 1.5 then
                     lastVacuum = os.clock()
                     pcall(function()
@@ -1329,6 +1416,7 @@ local function runToSafeZone()
                             .. hwTargets[2].label)
                         table.remove(hwTargets, 1)
                         target = hwTargets[1].pos
+                        flyPhase = "cruise"
                         -- fall through: the loop keeps walking to the
                         -- new target (dist is recomputed at the loop top)
                     else
@@ -1340,11 +1428,13 @@ local function runToSafeZone()
                     print("[SeedFarm] runback timeout")
                     return false
                 end
-                if (root.Position - lastPos).Magnitude < 1 then
-                    humanoid.Jump = true
+                if not flyMode then
+                    if (root.Position - lastPos).Magnitude < 1 then
+                        humanoid.Jump = true
+                    end
+                    humanoid:MoveTo(moveTarget)
                 end
                 lastPos = root.Position
-                humanoid:MoveTo(moveTarget)
             else
                 task.wait(0.5) -- wait for respawn
             end
@@ -1438,8 +1528,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.100",
-    LoadingTitle = "Seed Farm v10.100",
+    Name = "🌱 Seed Farm v10.103",
+    LoadingTitle = "Seed Farm v10.103",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -1920,6 +2010,8 @@ areaFarm.toggles.speedway = SpeedwayTab:CreateToggle({
 })
 
 
+
+
 SpeedwayTab:CreateSection("⚡ Lightning Chamber")
 
 -- Lightning chamber (from the game's lightning-chamber-config, Oct 22 2026):
@@ -1995,11 +2087,6 @@ local function teleportToLightningPad(pad)
     end
     print(string.format("[SeedFarm] teleported to lightning pad %d at %s", pad, tostring(pos)))
 end
-
-SpeedwayTab:CreateButton({
-    Name = "⚡ Lightning Chamber (center)",
-    Callback = function() teleportToLightningPad(5) end,
-})
 
 -- AUTO LIGHTNING: the game broadcasts every strike on an instance named
 -- "LightningChamberState" (attributes per lightning-chamber-config):
@@ -2117,17 +2204,14 @@ local function autoLightningLoop(gen)
 end
 
 local autoLightningToggle = nil
-local surgeState = { joinOn = false, joined = false }
 local function applyAutoLightning(v)
     lightningAuto = v
     lightningGen = lightningGen + 1
     if v then
-        setStatus("⚡ Auto Lightning ON")
         print("[SeedFarm] auto lightning ON - watching "
             .. "LightningChamberState")
         task.spawn(function() autoLightningLoop(lightningGen) end)
     else
-        setStatus("⚡ Auto Lightning OFF")
         print("[SeedFarm] auto lightning OFF")
     end
 end
@@ -2139,78 +2223,6 @@ autoLightningToggle = SpeedwayTab:CreateToggle({
     Callback = function(value) applyAutoLightning(value) end,
 })
 
-SpeedwayTab:CreateToggle({
-    Name = "⚡ SURGE AUTO-JOIN",
-    CurrentValue = false,
-    Flag = "SurgeAutoJoin",
-    Callback = function(v)
-        surgeState.joinOn = v
-        print("[SeedFarm] surge auto-join " .. (v and "ON" or "OFF"))
-    end,
-})
-
--- surge watcher (v10.88): surges are announced ~30s ahead on the state
--- instance (SurgeStart/SurgeEnd attributes). With SURGE AUTO-JOIN on:
--- alert at the announcement, switch AUTO LIGHTNING on for the surge
--- window, back off when it ends. If Daniel turns AUTO LIGHTNING off
--- mid-surge himself, that is respected for the rest of that surge.
-task.spawn(function()
-    local state = nil
-    local lastSurgeStart = nil
-    while true do
-        task.wait(1)
-        if surgeState.joinOn then
-            pcall(function()
-                if not state or not state.Parent then
-                    state = findLightningState()
-                end
-                if not state then return end
-                local now = workspace:GetServerTimeNow()
-                local surge = state:GetAttribute("Surge")
-                local sStart = state:GetAttribute("SurgeStart")
-                local sEnd = state:GetAttribute("SurgeEnd")
-                local active = (surge == true)
-                    or (type(sStart) == "number"
-                        and type(sEnd) == "number"
-                        and now >= sStart and now <= sEnd)
-                if type(sStart) == "number" and sStart > now
-                    and sStart - now <= 35
-                    and sStart ~= lastSurgeStart then
-                    lastSurgeStart = sStart
-                    print("[SeedFarm] ⚡ SURGE announced - starts in "
-                        .. math.floor(sStart - now) .. "s")
-                    setStatus("⚡ Surge in "
-                        .. math.floor(sStart - now) .. "s!")
-                end
-                if active and surgeState.joined and not lightningAuto then
-                    surgeState.joined = false
-                    print("[SeedFarm] surge auto-join: manual off respected")
-                elseif active and not lightningAuto
-                    and not surgeState.joined then
-                    surgeState.joined = true
-                    print("[SeedFarm] ⚡ SURGE active - auto-joining lightning")
-                    applyAutoLightning(true)
-                    if autoLightningToggle then
-                        pcall(function()
-                            autoLightningToggle:Set(true)
-                        end)
-                    end
-                elseif not active and surgeState.joined then
-                    surgeState.joined = false
-                    if lightningAuto then
-                        print("[SeedFarm] ⚡ surge over - auto lightning off")
-                        applyAutoLightning(false)
-                        if autoLightningToggle then
-                            pcall(function()
-                                autoLightningToggle:Set(false)
-                            end)
-                        end
-                    end
-                end
-            end)
-        end
-    end
-end)
 
 --------------------------------------------------------------------------------
 -- IMP FARM TAB (pumpkin imp farmer v1.1, merged in)
@@ -2636,11 +2648,13 @@ FarmTab:CreateButton({
     end,
 })
 
--- Black Hole event one-tap (v10.87): teleport straight to the live event
--- seed (the watcher above tracks it) and report its carrier state
+-- Black Hole event runner (v10.101, was the TP button): walk to the
+-- live event seed on foot, re-aiming at its position every 0.4s; on
+-- arrival, fire its pickup prompt (no E key needed). STOP cancels.
 FarmTab:CreateButton({
-    Name = "🕳️ TP TO BLACK HOLE",
+    Name = "🕳️ RUN TO BLACK HOLE",
     Callback = function()
+        if areaFarm.bhRunning then return end
         local inst = nil
         pcall(function()
             for _, t in ipairs(CollectionService:GetTagged("BlackHoleSeed")) do
@@ -2650,20 +2664,65 @@ FarmTab:CreateButton({
         end)
         if not inst then
             setStatus("No Black Hole seed live right now")
-            print("[SeedFarm] black hole TP: no live event seed")
+            print("[SeedFarm] black hole run: no live event seed")
             return
         end
-        local pos = nil
-        pcall(function() pos = inst:GetPivot().Position end)
-        local root = getRoot()
-        if not pos or not root then setStatus("No character!") return end
-        root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
         local carrier = inst:GetAttribute("BlackHoleCarrierUserId")
+        if carrier == LocalPlayer.UserId then
+            setStatus("🕳️ You're carrying it - deliver to your safe zone!")
+            return
+        end
         local who = bhPlayerName(carrier)
-        setStatus("🕳️ Black Hole seed"
-            .. (who and (" - carried by " .. who) or " - FREE, grab it!"))
-        print("[SeedFarm] black hole TP -> " .. tostring(pos)
-            .. " carrier=" .. tostring(carrier))
+        print("[SeedFarm] black hole run: seed is "
+            .. (who and ("carried by " .. who) or "FREE"))
+        areaFarm.bhRunning = true
+        stopRunback = false
+        setStatus("🕳️ Running to Black Hole seed... (STOP cancels)")
+        task.spawn(function()
+            local started = os.clock()
+            while areaFarm.bhRunning do
+                if stopRunback then
+                    setStatus("🕳️ Black Hole run stopped")
+                    break
+                end
+                if os.clock() - started > 180 then
+                    setStatus("🕳️ Black Hole run timed out")
+                    break
+                end
+                if not inst.Parent then
+                    setStatus("🕳️ Black Hole seed gone")
+                    break
+                end
+                if inst:GetAttribute("BlackHoleCarrierUserId")
+                    == LocalPlayer.UserId then
+                    setStatus("🕳️ You have the Black Hole seed - "
+                        .. "deliver it to your safe zone!")
+                    print("[SeedFarm] black hole run: you picked it up")
+                    break
+                end
+                local root = getRoot()
+                local pos = nil
+                pcall(function() pos = inst:GetPivot().Position end)
+                if root and pos then
+                    local d = (root.Position - pos).Magnitude
+                    if d <= 8 then
+                        pcall(function()
+                            local prompt = inst:FindFirstChildWhichIsA(
+                                "ProximityPrompt", true)
+                            if prompt then fireproximityprompt(prompt) end
+                        end)
+                        setStatus("🕳️ At the Black Hole seed - grab it!")
+                        print("[SeedFarm] black hole run: arrived")
+                        break
+                    end
+                    local hum = root.Parent
+                        and root.Parent:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:MoveTo(pos) end
+                end
+                task.wait(0.4)
+            end
+            areaFarm.bhRunning = false
+        end)
     end,
 })
 
@@ -2829,19 +2888,6 @@ FarmTab:CreateDropdown({
         for _, t in ipairs(Options or {}) do espTierSet[t] = true end
         print("[SeedFarm] world ESP tiers: " .. table.concat(Options or {}, ", "))
         if syncWorldESP then pcall(function() syncWorldESP(findWildSeeds()) end) end
-    end,
-})
-
-FarmTab:CreateSection("Speed")
-FarmTab:CreateSlider({
-    Name = "Run Speed",
-    Flag = "RunSpeed",
-    Range = { 0, 500 },
-    Increment = 10,
-    CurrentValue = 250,
-    Callback = function(v)
-        RUN_SPEED = math.clamp(math.floor(v), 0, 500)
-        print("[SeedFarm] run speed set to " .. RUN_SPEED)
     end,
 })
 
@@ -3133,7 +3179,9 @@ task.spawn(function()
                 if updateSeedESP then pcall(updateSeedESP) end
                 setStatus("Auto Farm: going for " .. target.name)
                 print("[SeedFarm] auto farm target: " .. seedDisplayText(target))
+                areaFarm.approachByRun = (areaFarm.area == "halloween") or nil
                 local msg = teleportToSelected()
+                areaFarm.approachByRun = nil
                 setStatus(msg)
                 if msg and msg:sub(1, 3) == "Got" then
                     noteCollected()
@@ -3289,7 +3337,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.100 loaded - pick a seed!")
+print("[SeedFarm] v10.103 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -3313,9 +3361,9 @@ task.delay(12, function()
         .. (selfReport.deliveryHook or "not hooked"))
     print("[SeedFarm] placement: " .. (selfReport.placement or "unknown"))
     print("[SeedFarm] growth config: " .. (selfReport.growth or "unknown"))
-    print("[SeedFarm] lightning: " .. (selfReport.lightning or "unresolved"))
     print("[SeedFarm] safe zones: " .. tostring(selfReport.safeZones or "?")
         .. " found")
+    print("[SeedFarm] lightning: " .. (selfReport.lightning or "unresolved"))
     print("[SeedFarm] catalog: " .. (selfReport.catalog or "not run yet"))
     print("[SeedFarm] black hole: " .. bh)
     print("[SeedFarm] black hole secured hook: "
@@ -4891,6 +4939,19 @@ SettingsTab:CreateDropdown({
                 print("[SeedFarm] theme '" .. name .. "' failed: " .. tostring(err))
             end
         end
+    end,
+})
+
+SettingsTab:CreateSection("Movement")
+SettingsTab:CreateSlider({
+    Name = "Run Speed",
+    Flag = "RunSpeed",
+    Range = { 0, 500 },
+    Increment = 10,
+    CurrentValue = 250,
+    Callback = function(v)
+        RUN_SPEED = math.clamp(math.floor(v), 0, 500)
+        print("[SeedFarm] run speed set to " .. RUN_SPEED)
     end,
 })
 
