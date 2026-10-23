@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.90 starting...")
+print("[SeedFarm] v10.91 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -547,6 +547,10 @@ local HALLOWEEN_AREAS = {
     {"HalloweenAbyss"}, {"HalloweenAbyss", "HalloweenCastle"},
 }
 
+-- console-quiet state (v10.91): scan diagnostics print on change only
+local lastScanPrintSig = nil
+local sweepPrinted = {} -- prompt instance -> already announced
+
 local function findWildSeeds()
     local seeds = {}
     pcall(function()
@@ -660,7 +664,8 @@ local function findWildSeeds()
                         data.sweepPromptText = prompt.ActionText
                         table.insert(seeds, data)
                         n7 += 1
-                        if n7 <= 10 then
+                        if not sweepPrinted[prompt] then
+                            sweepPrinted[prompt] = true
                             print(string.format("[SeedFarm] sweep found: '%s' prompt='%s' at %s",
                                 data.name, prompt.ActionText, prompt:GetFullName()))
                         end
@@ -668,16 +673,25 @@ local function findWildSeeds()
                 end
             end
         end
-        print(string.format("[SeedFarm] scan: wild=%d bh=%d mutant=%d core=%d+%d abyssal=%d codex=%d halloween=%d sweep=%d total=%d",
-            n1, n2, n3, n4, n4b, n5, n6, n6b, n7, #seeds))
-        -- tier breakdown for debugging
+        -- tier breakdown for debugging - printed only when the tally
+        -- changes (v10.91): findWildSeeds runs every 1.5s from the
+        -- background refresh plus ESP/vacuum/farm scans, and printing
+        -- every call flooded the console with identical blocks
         local tiers = {}
         for _, s in ipairs(seeds) do
             tiers[s.tierStr] = (tiers[s.tierStr] or 0) + 1
         end
         local tstr = {}
         for t, n in pairs(tiers) do table.insert(tstr, t .. "=" .. n) end
-        print("[SeedFarm] tiers: " .. table.concat(tstr, " "))
+        local scanSig = string.format("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d|%s",
+            n1, n2, n3, n4, n4b, n5, n6, n6b, n7, #seeds,
+            table.concat(tstr, " "))
+        if scanSig ~= lastScanPrintSig then
+            lastScanPrintSig = scanSig
+            print(string.format("[SeedFarm] scan: wild=%d bh=%d mutant=%d core=%d+%d abyssal=%d codex=%d halloween=%d sweep=%d total=%d",
+                n1, n2, n3, n4, n4b, n5, n6, n6b, n7, #seeds))
+            print("[SeedFarm] tiers: " .. table.concat(tstr, " "))
+        end
     end)
     -- no filters: show every spawned seed
     -- (special types still get isSpecial flag for styling)
@@ -1348,8 +1362,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.90",
-    LoadingTitle = "Seed Farm v10.90",
+    Name = "🌱 Seed Farm v10.91",
+    LoadingTitle = "Seed Farm v10.91",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -1403,9 +1417,15 @@ local seedDropdown = FarmTab:CreateDropdown({
         local sel = type(Options) == "table" and Options[1] or Options
         local s = sel and seedByText[sel]
         if s then
+            local changed = (not selectedSeed)
+                or selectedSeed.model ~= s.model
+                or selectedSeed.uid ~= s.uid
+                or selectedSeed.name ~= s.name
             selectedSeed = s
-            setStatus("Selected: " .. s.name)
-            print("[SeedFarm] selected " .. s.name .. " (" .. s.source .. (s.mutated and ", mutated" or "") .. ")")
+            if changed then
+                setStatus("Selected: " .. s.name)
+                print("[SeedFarm] selected " .. s.name .. " (" .. s.source .. (s.mutated and ", mutated" or "") .. ")")
+            end
             if updateSeedESP then pcall(updateSeedESP) end
         end
     end,
@@ -1430,7 +1450,7 @@ local function refreshSeedList(force)
     if dropRebuilding then return end
     dropRebuilding = true
     local seeds = findWildSeeds()
-    print("[SeedFarm] found " .. #seeds .. " seeds")
+    if force then print("[SeedFarm] found " .. #seeds .. " seeds") end
     local opts, map = {}, {}
     for _, s in ipairs(seeds) do
         local t = seedDisplayText(s)
@@ -1626,9 +1646,15 @@ local speedwayDropdown = SpeedwayTab:CreateDropdown({
         local sel = type(Options) == "table" and Options[1] or Options
         local s = sel and speedwayByText[sel]
         if s then
+            local changed = (not selectedSeed)
+                or selectedSeed.model ~= s.model
+                or selectedSeed.uid ~= s.uid
+                or selectedSeed.name ~= s.name
             selectedSeed = s
-            setStatus("Selected: " .. s.name)
-            print("[SeedFarm] selected speedway seed " .. s.name .. " (" .. s.source .. ")")
+            if changed then
+                setStatus("Selected: " .. s.name)
+                print("[SeedFarm] selected speedway seed " .. s.name .. " (" .. s.source .. ")")
+            end
             if updateSeedESP then pcall(updateSeedESP) end
         end
     end,
@@ -1641,7 +1667,9 @@ function refreshSpeedwayList(force)
     if speedwayRebuilding then return end
     speedwayRebuilding = true
     local seeds = speedwaySeeds()
-    print("[SeedFarm] found " .. #seeds .. " speedway seeds")
+    if force then
+        print("[SeedFarm] found " .. #seeds .. " speedway seeds")
+    end
     local opts, map = {}, {}
     for _, s in ipairs(seeds) do
         local t = seedDisplayText(s)
@@ -3204,7 +3232,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.90 loaded - pick a seed!")
+print("[SeedFarm] v10.91 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -4798,4 +4826,3 @@ end))
     print("[PlantSeed] merged into Seed Farm - Plant tab ready")
 end
 plantSeedInit()
-
