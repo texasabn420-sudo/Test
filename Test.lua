@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.104 starting...")
+print("[SeedFarm] v10.105 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -905,6 +905,9 @@ local lastDeliveryUid = nil
 local lastCarriedUid = nil
 local manualTpPending = false
 
+local approachByRun = false -- halloween farm run-in flag (set by the
+-- farm cycle below; declared here because teleportToSelected is
+-- defined before the areaFarm table exists - v10.105 crash fix)
 local function teleportToSelected()
     if not selectedSeed then
         return "Pick a seed first!"
@@ -963,7 +966,7 @@ local function teleportToSelected()
     pcall(function()
         pos = selectedSeed.model:GetPivot().Position
     end)
-    if areaFarm.approachByRun then
+    if approachByRun then
         -- Halloween farm run-in (v10.103, Daniel's ask): walk to the
         -- seed on foot instead of teleporting, then fall through to
         -- the same prompt + confirm flow below.
@@ -1593,8 +1596,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.104",
-    LoadingTitle = "Seed Farm v10.104",
+    Name = "🌱 Seed Farm v10.105",
+    LoadingTitle = "Seed Farm v10.105",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -3244,9 +3247,9 @@ task.spawn(function()
                 if updateSeedESP then pcall(updateSeedESP) end
                 setStatus("Auto Farm: going for " .. target.name)
                 print("[SeedFarm] auto farm target: " .. seedDisplayText(target))
-                areaFarm.approachByRun = (areaFarm.area == "halloween") or nil
+                approachByRun = (areaFarm.area == "halloween")
                 local msg = teleportToSelected()
-                areaFarm.approachByRun = nil
+                approachByRun = false
                 setStatus(msg)
                 if msg and msg:sub(1, 3) == "Got" then
                     noteCollected()
@@ -3402,7 +3405,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.104 loaded - pick a seed!")
+print("[SeedFarm] v10.105 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
