@@ -1,10 +1,46 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.94 starting...")
+print("[SeedFarm] v10.100 starting...")
 
 local Rayfield = nil
 pcall(function()
-    Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+    local src = game:HttpGet("https://sirius.menu/rayfield")
+    -- Rayfield leak patch (v10.95): SetDropdownOptions connects a theme
+    -- handler for EVERY dropdown option that keeps indexing the option
+    -- frame forever. Refresh destroys old option frames, so any later
+    -- theme change errors "UIStroke is not a valid member of Frame"
+    -- once per stale option. Guard both leaked handlers. Fail-open: if
+    -- an anchor ever changes upstream, the unpatched library loads.
+    local patched = false
+    local a1 = "DropdownOption.UIStroke.Color = SelectedTheme.ElementStroke"
+    if src:find(a1, 1, true) then
+        src = src:gsub(
+            "DropdownOption%.UIStroke%.Color = SelectedTheme%.ElementStroke",
+            'local __s = DropdownOption:FindFirstChild("UIStroke"); '
+                .. 'if __s then __s.Color = SelectedTheme.ElementStroke end',
+            1)
+        patched = true
+    end
+    local TAB = string.char(9)
+    local a2 = "GetPropertyChangedSignal('BackgroundColor3')"
+        .. ":Connect(function()\n" .. TAB:rep(6)
+        .. "if not table.find(DropdownSettings.CurrentOption, droption.Name) then"
+    local p2 = src:find(a2, 1, true)
+    if p2 then
+        local r2 = "GetPropertyChangedSignal('BackgroundColor3')"
+            .. ":Connect(function()\n" .. TAB:rep(6)
+            .. "if not droption.Parent then return end\n" .. TAB:rep(6)
+            .. "if not table.find(DropdownSettings.CurrentOption, droption.Name) then"
+        src = src:sub(1, p2 - 1) .. r2 .. src:sub(p2 + #a2)
+        patched = true
+    end
+    local chunk = loadstring(src)
+    if not chunk and patched then
+        chunk = loadstring(game:HttpGet("https://sirius.menu/rayfield"))
+    end
+    print("[SeedFarm] rayfield leak patch: "
+        .. (patched and "applied" or "anchor missed - unpatched"))
+    Rayfield = chunk()
 end)
 if not Rayfield then
     print("[SeedFarm] ERROR: Rayfield failed to load (internet/executor?) - old copy left running")
@@ -1394,7 +1430,6 @@ local function setEggStatus(t)
 end
 
 -- Grow & Pet toggle states (the automation loops at the bottom read these)
-local hatchOn = false
 local equipOn = false
 
 -- drop a stale saved theme name that this Rayfield build doesn't have
@@ -1403,8 +1438,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.94",
-    LoadingTitle = "Seed Farm v10.94",
+    Name = "🌱 Seed Farm v10.100",
+    LoadingTitle = "Seed Farm v10.100",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -1415,7 +1450,6 @@ local Window = Rayfield:CreateWindow({
 })
 
 local FarmTab = Window:CreateTab("🌱 Main", 4483362458)
-local PetTab = Window:CreateTab("🥚 Grow & Pet", 4483362458)
 
 FarmTab:CreateSection("Seeds")
 local seedByText = {}
@@ -1673,6 +1707,7 @@ local SpeedwayTab = Window:CreateTab("🏁 Speedway", 4483362458)
 
 do -- Halloween tab (v10.94): halloween-only seeds + scoped auto farm
     local HalloweenTab = Window:CreateTab("👻 Halloween", 4483362458)
+    areaFarm.halloweenTab = HalloweenTab -- imp controls attach below the halloween seeds
     HalloweenTab:CreateSection("Halloween Seeds")
     local halloweenByText = {}
     local halloweenDropdown = HalloweenTab:CreateDropdown({
@@ -1884,55 +1919,6 @@ areaFarm.toggles.speedway = SpeedwayTab:CreateToggle({
     Callback = function(v) setAreaAutoFarm("speedway", v) end,
 })
 
-SpeedwayTab:CreateSection("Chambers")
-
--- chamber positions come from the game's own speedway-config module:
--- chamberSpawnPosition(tier) is speedway-local, speedwayToWorld adds (5000,0,0)
-local speedwayCfgCache = false -- false = not tried yet
-local function getSpeedwayCfg()
-    if speedwayCfgCache ~= false then return speedwayCfgCache end
-    local ok, mod = pcall(function()
-        local rs = game:GetService("ReplicatedStorage")
-        local common = rs:FindFirstChild("Common")
-        local cfgFolder = common and common:FindFirstChild("config")
-        local m = cfgFolder and cfgFolder:FindFirstChild("speedway-config")
-        if not m then return nil end
-        return require(m)
-    end)
-    speedwayCfgCache = (ok and mod) or nil
-    return speedwayCfgCache
-end
-
-local function teleportToChamber(tier)
-    local cfg = getSpeedwayCfg()
-    if not cfg or not cfg.chamberSpawnPosition or not cfg.speedwayToWorld then
-        setStatus("Speedway config not found!")
-        print("[SeedFarm] chamber teleport: speedway-config module not resolved")
-        return
-    end
-    local ok, pos = pcall(function()
-        return cfg.speedwayToWorld(cfg.chamberSpawnPosition(tier))
-    end)
-    if not ok or typeof(pos) ~= "Vector3" then
-        setStatus("Chamber position failed!")
-        print("[SeedFarm] chamber teleport: position lookup failed for tier " .. tier)
-        return
-    end
-    local root = getRoot()
-    if not root then setStatus("No character!") return end
-    root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
-    setStatus("Chamber " .. tier)
-    print(string.format("[SeedFarm] teleported to chamber %d at %s", tier, tostring(pos)))
-end
-
-local CHAMBER_NAMES = { "VELOCITY", "OVERDRIVE", "HYPER", "GLITCHED", "HACKED" }
-for tier = 1, 5 do
-    local t = tier -- fresh local per iteration for the closure
-    SpeedwayTab:CreateButton({
-        Name = "🚪 Chamber " .. t .. " · " .. CHAMBER_NAMES[t],
-        Callback = function() teleportToChamber(t) end,
-    })
-end
 
 SpeedwayTab:CreateSection("⚡ Lightning Chamber")
 
@@ -2231,8 +2217,7 @@ end)
 -- Imp = Configuration "Imp" in ReplicatedStorage.HalloweenPumpkinImp.
 -- Position P + V*dt, hits via shovel Activate() (server cooldown 1.25s).
 --------------------------------------------------------------------------------
-local ImpTab = Window:CreateTab("🎃 Imp Farm", 4483362458)
-ImpTab:CreateSection("Imps")
+areaFarm.halloweenTab:CreateSection("🎃 Imp Farm")
 
 local ImpConfig = {
     ImpFolderName = "HalloweenPumpkinImp",
@@ -2361,8 +2346,8 @@ local function grabImpBag(bag)
     return (not bag.Parent) or state == "Carried" or carrier ~= 0
 end
 
-local impStatusLabel = ImpTab:CreateLabel("Idle")
-local impCountLabel = ImpTab:CreateLabel("🎃 0   🍬 0")
+local impStatusLabel = areaFarm.halloweenTab:CreateLabel("Idle")
+local impCountLabel = areaFarm.halloweenTab:CreateLabel("🎃 0   🍬 0")
 local function setImpStatus(text)
     pcall(function()
         impStatusLabel:Set(text)
@@ -2392,7 +2377,7 @@ local function impDisplayText(cfg)
 end
 
 local impByText = {}
-local impDropdown = ImpTab:CreateDropdown({
+local impDropdown = areaFarm.halloweenTab:CreateDropdown({
     Name = "Select Imp",
     Options = { "— press Refresh —" },
     CurrentOption = { "— press Refresh —" },
@@ -2432,12 +2417,12 @@ function refreshImpList(force)
     impRebuilding = false
 end
 
-ImpTab:CreateButton({
+areaFarm.halloweenTab:CreateButton({
     Name = "🔄 Refresh Imps",
     Callback = function() refreshImpList(true) end,
 })
 
-ImpTab:CreateSection("Actions")
+areaFarm.halloweenTab:CreateSection("Actions")
 
 local function farmImpBody(cfg)
     local shovel = getImpShovel()
@@ -2543,7 +2528,7 @@ function runImpCycle(cfg, fromAuto)
     pcall(function() refreshImpList(true) end)
 end
 
-ImpTab:CreateButton({
+areaFarm.halloweenTab:CreateButton({
     Name = "🎯 FIGHT SELECTED",
     Callback = function()
         if selectedImp and selectedImp.Parent then
@@ -2554,7 +2539,7 @@ ImpTab:CreateButton({
     end,
 })
 
-impAutoToggle = ImpTab:CreateToggle({
+impAutoToggle = areaFarm.halloweenTab:CreateToggle({
     Name = "🔁 Imp Auto-Farm",
     CurrentValue = false,
     Callback = function(v)
@@ -2566,7 +2551,7 @@ impAutoToggle = ImpTab:CreateToggle({
     end,
 })
 
-impBagBtn = ImpTab:CreateButton({
+impBagBtn = areaFarm.halloweenTab:CreateButton({
     Name = "🍬 GRAB BAG",
     Callback = function()
         if impLoopActive then return end
@@ -3181,139 +3166,6 @@ task.spawn(function()
     end
 end)
 
-PetTab:CreateSection("Grow & Pet")
-PetTab:CreateToggle({
-    Name = "Auto Hatch (Grow All)",
-    Flag = "AutoHatch",
-    CurrentValue = false,
-    Callback = function(v)
-        hatchOn = v
-        print("[SeedFarm] auto hatch " .. (v and "ON" or "OFF"))
-    end,
-})
-PetTab:CreateToggle({
-    Name = "Equip Best Pet",
-    Flag = "EquipBest",
-    CurrentValue = false,
-    Callback = function(v)
-        equipOn = v
-        print("[SeedFarm] equip best pet " .. (v and "ON" or "OFF"))
-    end,
-})
-eggStatusLabel = PetTab:CreateLabel("")
-
-local SettingsTab = Window:CreateTab("⚙️ Settings", 4483362458)
-SettingsTab:CreateSection("Session")
--- Anti-AFK lives here now (moved from the Farm tab)
-SettingsTab:CreateToggle({
-    Name = "AFK (Anti-AFK)",
-    Flag = "AntiAFK",
-    CurrentValue = false,
-    Callback = function(v)
-        afkEnabled = v
-        print("[SeedFarm] anti-AFK " .. (v and "ON" or "OFF"))
-    end,
-})
-SettingsTab:CreateToggle({
-    Name = "Noclip",
-    Flag = "Noclip",
-    CurrentValue = false,
-    Callback = function(v)
-        noclipEnabled = v
-        print("[SeedFarm] noclip " .. (v and "ON" or "OFF"))
-    end,
-})
-SettingsTab:CreateToggle({
-    Name = "Inf Jump",
-    Flag = "InfJump",
-    CurrentValue = false,
-    Callback = function(v)
-        infJumpEnabled = v
-        print("[SeedFarm] inf jump " .. (v and "ON" or "OFF"))
-    end,
-})
--- Auto Rejoin: when ON, a disconnect/kick error prompt triggers an
--- instant rejoin into the SAME server (toggle, so it can be turned off)
-local autoRejoinOn = false
-SettingsTab:CreateToggle({
-    Name = "Auto Rejoin",
-    Flag = "AutoRejoin",
-    CurrentValue = false,
-    Callback = function(v)
-        autoRejoinOn = v
-        print("[SeedFarm] auto rejoin " .. (v and "ON" or "OFF"))
-    end,
-})
-task.spawn(function()
-    local pgui = game:GetService("CoreGui"):WaitForChild("RobloxPromptGui", 30)
-    local overlay = pgui and pgui:WaitForChild("promptOverlay", 30)
-    if overlay then
-        overlay.ChildAdded:Connect(function(child)
-            if autoRejoinOn and stillAlive() and child.Name == "ErrorPrompt" then
-                print("[SeedFarm] disconnect detected - auto rejoining same server")
-                pcall(function()
-                    game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-                end)
-            end
-        end)
-        print("[SeedFarm] auto rejoin watcher ready")
-    end
-end)
-
-SettingsTab:CreateSection("Server")
--- Hop Server: pick a random non-full public server (emptiest first page)
--- that isn't this one and teleport to it
-SettingsTab:CreateButton({
-    Name = "🔀 Hop Server",
-    Callback = function()
-        setStatus("Hopping server...")
-        local ok, err = pcall(function()
-            local HttpService = game:GetService("HttpService")
-            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
-            local data = HttpService:JSONDecode(game:HttpGet(url))
-            local candidates = {}
-            for _, s in ipairs(data.data or {}) do
-                if s.id and s.id ~= game.JobId and (s.maxPlayers or 0) - (s.playing or 0) > 0 then
-                    table.insert(candidates, s.id)
-                end
-            end
-            if #candidates == 0 then error("no other server available") end
-            local target = candidates[math.random(1, #candidates)]
-            print("[SeedFarm] hopping to server " .. target)
-            game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, target, LocalPlayer)
-        end)
-        if not ok then
-            setStatus("Hop failed - tap again")
-            print("[SeedFarm] hop failed: " .. tostring(err))
-        end
-    end,
-})
-
-SettingsTab:CreateSection("Appearance")
-SettingsTab:CreateDropdown({
-    Name = "Theme",
-    Flag = "Theme",
-    Options = { "Default", "Green", "DarkBlue", "Amethyst", "Bloom", "Ocean", "Serenity", "AmberGlow", "Light" },
-    CurrentOption = { getgenv().__SeedFarmTheme or "Green" },
-    MultipleOptions = false,
-    Callback = function(Options)
-        local name = type(Options) == "table" and Options[1] or Options
-        if name and not VALID_THEMES[name] then
-            print("[SeedFarm] ignoring unknown theme: " .. tostring(name))
-            name = nil
-        end
-        if name then
-            local ok, err = pcall(function() Window.ModifyTheme(name) end)
-            if ok then
-                getgenv().__SeedFarmTheme = name -- remembered on re-execute
-                print("[SeedFarm] theme -> " .. name)
-            else
-                print("[SeedFarm] theme '" .. name .. "' failed: " .. tostring(err))
-            end
-        end
-    end,
-})
-
 -- scrub a stale theme name out of the saved config BEFORE it loads: restoring
 -- an unknown theme empties Rayfield's theme state, which the tab buttons
 -- read before switching pages - so the tabs silently stop working
@@ -3329,8 +3181,9 @@ pcall(function()
         end
     end
 end)
-local cfgOk, cfgErr = pcall(function() Rayfield:LoadConfiguration() end)
-print("[SeedFarm] LoadConfiguration: " .. tostring(cfgOk) .. (cfgOk and "" or (" - " .. tostring(cfgErr))))
+-- LoadConfiguration moved to the very end of the file
+-- (v10.98) so elements created inside plantSeedInit
+-- (the Plant tab) exist before saved values are applied
 
 refreshSeedList(true)
 pcall(function() refreshSpeedwayList(true) end)
@@ -3436,7 +3289,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.94 loaded - pick a seed!")
+print("[SeedFarm] v10.100 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -3472,76 +3325,10 @@ end)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- find remotes by name pattern
-local function findRemotes(patterns)
-    local found = {}
-    pcall(function()
-        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-                local n = obj.Name:lower()
-                for _, pat in ipairs(patterns) do
-                    if n:find(pat) then
-                        table.insert(found, obj)
-                        break
-                    end
-                end
-            end
-        end
-    end)
-    return found
-end
-
--- log discovered seed/pet remotes on load (helps wire up correct args)
-task.spawn(function()
-    task.wait(2)
-    local seedR = findRemotes({"seed"})
-    local hatchR = findRemotes({"hatch", "grow"})
-    local petR = findRemotes({"pet"})
-    print("[SeedFarm][Egg] seed remotes (" .. #seedR .. "):")
-    for _, r in ipairs(seedR) do print("  - " .. r:GetFullName()) end
-    print("[SeedFarm][Egg] hatch/grow remotes (" .. #hatchR .. "):")
-    for _, r in ipairs(hatchR) do print("  - " .. r:GetFullName()) end
-    print("[SeedFarm][Egg] pet remotes (" .. #petR .. "):")
-    for _, r in ipairs(petR) do print("  - " .. r:GetFullName()) end
-    -- also look for Grow All button
-    pcall(function()
-        for _, obj in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do
-            if obj:IsA("TextButton") and obj.Text:lower():find("grow all") then
-                print("[SeedFarm][Egg] Grow All button: " .. obj:GetFullName())
-            end
-        end
-    end)
-end)
-
 -- get GlobalEvents folder
 local globalEvents = nil
 pcall(function()
     globalEvents = ReplicatedStorage:FindFirstChild("shared/network@GlobalEvents")
-end)
-
-local hatchFails = 0
-task.spawn(function()
-    while stillAlive() do
-        task.wait(3)
-        if hatchOn and globalEvents then
-            if hatchFails >= 5 then
-                setEggStatus("GrowAll paused (5 fails) - toggle off/on")
-            else
-                local ok = pcall(function()
-                    globalEvents.RequestGrowAllSeeds:FireServer()
-                end)
-                if ok then
-                    hatchFails = 0
-                    setEggStatus("Fired RequestGrowAllSeeds")
-                else
-                    hatchFails += 1
-                    setEggStatus("GrowAll failed (" .. hatchFails .. "/5)")
-                end
-            end
-        else
-            hatchFails = 0
-        end
-    end
 end)
 
 -- Equip Best Pet loop (uses RequestFillBest)
@@ -4931,110 +4718,6 @@ end))
         Callback = function() plantAllSeeds() end,
     })
 
-    PlantTab:CreateButton({
-        Name = "🌾 HARVEST PROBE",
-        Callback = function() task.spawn(harvestProbe) end,
-    })
-
-    PlantTab:CreateToggle({
-        Name = "🎓 LEARN",
-        CurrentValue = false,
-        Callback = function(v)
-            learnOn = v
-            if v then
-                hookGridClicks()
-                psSetStatus("LEARN: click each seed in your inventory ONCE")
-                print("[PlantSeed] LEARN on - click each seed in the "
-                    .. "inventory grid once, then hit SCAN")
-            else
-                local c = 0
-                for _ in pairs(learnedUids) do c += 1 end
-                psSetStatus("Learn off (" .. c .. " uids captured)")
-            end
-        end,
-    })
-
-    PlantTab:CreateToggle({
-        Name = "🎧 SNIFF",
-        CurrentValue = false,
-        Callback = function(v)
-            sniffOn = v
-            psSetStatus(v
-                and "Sniffing: equip + plant one seed BY HAND now"
-                or "Sniff off")
-        end,
-    })
-
-    -- AUTO-HARVEST (v10.90): prompt-driven v1. Every 5s, check his
-    -- crops for an Enabled GrowPrompt whose text reads like a harvest
-    -- action (harvest/collect/pick/ready); teleport onto the crop and
-    -- fire it. The prompt IS the game's harvest interface, so this
-    -- adapts to the game's own wording; if nothing ever matches it
-    -- notes that once and stays out of the way. OFF by default.
-    local psAutoHarvest = false
-    local psHarvestNoteShown = false
-    local function psTryHarvest()
-        local soil = psSoilCache
-        if not soil then
-            soil = getSoil()
-            if soil then psSoilCache = soil end
-        end
-        if not soil then return end
-        local crops = psMyCropModels(soil)
-        local anyPrompt = false
-        for _, m in ipairs(crops) do
-            if not psAutoHarvest then return end
-            local prompt = nil
-            pcall(function()
-                prompt = m:FindFirstChild("GrowPrompt", true)
-            end)
-            if prompt and prompt:IsA("ProximityPrompt") then
-                anyPrompt = true
-                if prompt.Enabled then
-                    local txt = ((prompt.ActionText or "") .. " "
-                        .. (prompt.ObjectText or "")):lower()
-                    if txt:find("harvest") or txt:find("collect")
-                        or txt:find("pick") or txt:find("ready") then
-                        local root = getRoot()
-                        local p = nil
-                        pcall(function() p = m:GetPivot().Position end)
-                        if root and p then
-                            root.CFrame = CFrame.new(
-                                p + Vector3.new(0, 3, 0))
-                            task.wait(0.35)
-                            pcall(function()
-                                fireproximityprompt(prompt)
-                            end)
-                            print("[PlantSeed] auto-harvest: fired '"
-                                .. tostring(prompt.ActionText)
-                                .. "' on " .. m.Name)
-                            task.wait(1.2)
-                            return
-                        end
-                    end
-                end
-            end
-        end
-        if not anyPrompt and not psHarvestNoteShown and #crops > 0 then
-            psHarvestNoteShown = true
-            print("[PlantSeed] auto-harvest: crops found but none carries "
-                .. "a GrowPrompt - harvest path unclear, run the PROBE")
-        end
-    end
-    PlantTab:CreateToggle({
-        Name = "🌾 AUTO-HARVEST",
-        CurrentValue = false,
-        Callback = function(v)
-            psAutoHarvest = v
-            psSetStatus(v and "Auto-harvest ON" or "Auto-harvest off")
-        end,
-    })
-    task.spawn(function()
-        while true do
-            task.wait(5)
-            if psAutoHarvest then pcall(psTryHarvest) end
-        end
-    end)
 
     -- AUTO-GROW (v10.93): RequestGrowAllSeeds() takes NO arguments -
     -- SNIFF capture Oct 23 2026 (Daniel fired Grow All by hand and the
@@ -5080,6 +4763,136 @@ end))
         end
     end)
 
+    -- Equip Best Pet (moved here from the removed Grow & Pet tab,
+    -- v10.98): same Flag, so its saved on/off state carries over; the
+    -- engine loop lives in the main chunk (fires RequestFillBest)
+    PlantTab:CreateSection("Pet")
+    PlantTab:CreateToggle({
+        Name = "Equip Best Pet",
+        Flag = "EquipBest",
+        CurrentValue = false,
+        Callback = function(v)
+            equipOn = v
+            print("[SeedFarm] equip best pet " .. (v and "ON" or "OFF"))
+        end,
+    })
+
     print("[PlantSeed] merged into Seed Farm - Plant tab ready")
 end
+
 plantSeedInit()
+
+local SettingsTab = Window:CreateTab("⚙️ Settings", 4483362458)
+SettingsTab:CreateSection("Session")
+-- Anti-AFK lives here now (moved from the Farm tab)
+SettingsTab:CreateToggle({
+    Name = "AFK (Anti-AFK)",
+    Flag = "AntiAFK",
+    CurrentValue = false,
+    Callback = function(v)
+        afkEnabled = v
+        print("[SeedFarm] anti-AFK " .. (v and "ON" or "OFF"))
+    end,
+})
+SettingsTab:CreateToggle({
+    Name = "Noclip",
+    Flag = "Noclip",
+    CurrentValue = false,
+    Callback = function(v)
+        noclipEnabled = v
+        print("[SeedFarm] noclip " .. (v and "ON" or "OFF"))
+    end,
+})
+SettingsTab:CreateToggle({
+    Name = "Inf Jump",
+    Flag = "InfJump",
+    CurrentValue = false,
+    Callback = function(v)
+        infJumpEnabled = v
+        print("[SeedFarm] inf jump " .. (v and "ON" or "OFF"))
+    end,
+})
+-- Auto Rejoin: when ON, a disconnect/kick error prompt triggers an
+-- instant rejoin into the SAME server (toggle, so it can be turned off)
+local autoRejoinOn = false
+SettingsTab:CreateToggle({
+    Name = "Auto Rejoin",
+    Flag = "AutoRejoin",
+    CurrentValue = false,
+    Callback = function(v)
+        autoRejoinOn = v
+        print("[SeedFarm] auto rejoin " .. (v and "ON" or "OFF"))
+    end,
+})
+task.spawn(function()
+    local pgui = game:GetService("CoreGui"):WaitForChild("RobloxPromptGui", 30)
+    local overlay = pgui and pgui:WaitForChild("promptOverlay", 30)
+    if overlay then
+        overlay.ChildAdded:Connect(function(child)
+            if autoRejoinOn and stillAlive() and child.Name == "ErrorPrompt" then
+                print("[SeedFarm] disconnect detected - auto rejoining same server")
+                pcall(function()
+                    game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+                end)
+            end
+        end)
+        print("[SeedFarm] auto rejoin watcher ready")
+    end
+end)
+
+SettingsTab:CreateSection("Server")
+-- Hop Server: pick a random non-full public server (emptiest first page)
+-- that isn't this one and teleport to it
+SettingsTab:CreateButton({
+    Name = "🔀 Hop Server",
+    Callback = function()
+        setStatus("Hopping server...")
+        local ok, err = pcall(function()
+            local HttpService = game:GetService("HttpService")
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+            local data = HttpService:JSONDecode(game:HttpGet(url))
+            local candidates = {}
+            for _, s in ipairs(data.data or {}) do
+                if s.id and s.id ~= game.JobId and (s.maxPlayers or 0) - (s.playing or 0) > 0 then
+                    table.insert(candidates, s.id)
+                end
+            end
+            if #candidates == 0 then error("no other server available") end
+            local target = candidates[math.random(1, #candidates)]
+            print("[SeedFarm] hopping to server " .. target)
+            game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, target, LocalPlayer)
+        end)
+        if not ok then
+            setStatus("Hop failed - tap again")
+            print("[SeedFarm] hop failed: " .. tostring(err))
+        end
+    end,
+})
+
+SettingsTab:CreateSection("Appearance")
+SettingsTab:CreateDropdown({
+    Name = "Theme",
+    Flag = "Theme",
+    Options = { "Default", "Green", "DarkBlue", "Amethyst", "Bloom", "Ocean", "Serenity", "AmberGlow", "Light" },
+    CurrentOption = { getgenv().__SeedFarmTheme or "Green" },
+    MultipleOptions = false,
+    Callback = function(Options)
+        local name = type(Options) == "table" and Options[1] or Options
+        if name and not VALID_THEMES[name] then
+            print("[SeedFarm] ignoring unknown theme: " .. tostring(name))
+            name = nil
+        end
+        if name then
+            local ok, err = pcall(function() Window.ModifyTheme(name) end)
+            if ok then
+                getgenv().__SeedFarmTheme = name -- remembered on re-execute
+                print("[SeedFarm] theme -> " .. name)
+            else
+                print("[SeedFarm] theme '" .. name .. "' failed: " .. tostring(err))
+            end
+        end
+    end,
+})
+
+local cfgOk, cfgErr = pcall(function() Rayfield:LoadConfiguration() end)
+print("[SeedFarm] LoadConfiguration: " .. tostring(cfgOk) .. (cfgOk and "" or (" - " .. tostring(cfgErr))))
