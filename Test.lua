@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.92 starting...")
+print("[SeedFarm] v10.94 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -1344,9 +1344,49 @@ local autoFarmOn = false
 local treadmillIdleOn = false
 local treadmillExitFn = nil
 local autoFarmMinTier = "Any"
+
+-- area split (v10.94, Daniel's ask): every seed belongs to exactly one
+-- farm area - main (biomes 1-8 + events), speedway (SW* ids + codex
+-- pads, mirroring isSpeedwaySeed), or halloween. Each area gets its own
+-- tab, dropdown and scoped Full Auto Farm; only one area farms at a
+-- time (turning one on switches the others off).
+local function seedArea(s)
+    if s.source == "halloween" then return "halloween" end
+    if (s.seedId and s.seedId:match("^SW")) or s.source == "codex" then
+        return "speedway"
+    end
+    return "main"
+end
+local areaFarm = {
+    area = "main", -- active Auto Farm scope (last area switched on)
+    auto = { main = false, speedway = false, halloween = false },
+    sel = {},      -- area -> that tab's selected seed
+    toggles = {},  -- area -> Rayfield toggle handle
+}
 local function setStatus(t)
     print("[SeedFarm] " .. tostring(t))
     if statusLabel then pcall(function() statusLabel:Set(t) end) end
+end
+
+local function setAreaAutoFarm(area, v)
+    if v then
+        for a, t in pairs(areaFarm.toggles) do
+            if a ~= area and areaFarm.auto[a] then
+                areaFarm.auto[a] = false
+                if t then pcall(function() t:Set(false) end) end
+            end
+        end
+        areaFarm.area = area
+    end
+    areaFarm.auto[area] = v
+    autoFarmOn = (areaFarm.auto.main or areaFarm.auto.speedway
+        or areaFarm.auto.halloween) and true or false
+    print("[SeedFarm] auto farm [" .. area .. "] " .. (v and "ON" or "OFF")
+        .. " (scope: " .. areaFarm.area .. ")")
+    if v then
+        setStatus("Auto Farm ON (" .. area .. ") - hunting "
+            .. autoFarmMinTier)
+    end
 end
 local function setEggStatus(t)
     print("[SeedFarm][Egg] " .. tostring(t))
@@ -1363,8 +1403,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.92",
-    LoadingTitle = "Seed Farm v10.92",
+    Name = "🌱 Seed Farm v10.94",
+    LoadingTitle = "Seed Farm v10.94",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -1374,7 +1414,7 @@ local Window = Rayfield:CreateWindow({
     KeySystem = false,
 })
 
-local FarmTab = Window:CreateTab("🌱 Farm", 4483362458)
+local FarmTab = Window:CreateTab("🌱 Main", 4483362458)
 local PetTab = Window:CreateTab("🥚 Grow & Pet", 4483362458)
 
 FarmTab:CreateSection("Seeds")
@@ -1423,6 +1463,7 @@ local seedDropdown = FarmTab:CreateDropdown({
                 or selectedSeed.uid ~= s.uid
                 or selectedSeed.name ~= s.name
             selectedSeed = s
+            areaFarm.sel.main = s
             if changed then
                 setStatus("Selected: " .. s.name)
                 print("[SeedFarm] selected " .. s.name .. " (" .. s.source .. (s.mutated and ", mutated" or "") .. ")")
@@ -1450,8 +1491,12 @@ end
 local function refreshSeedList(force)
     if dropRebuilding then return end
     dropRebuilding = true
-    local seeds = findWildSeeds()
-    if force then print("[SeedFarm] found " .. #seeds .. " seeds") end
+    local allSeeds = findWildSeeds()
+    local seeds = {}
+    for _, s in ipairs(allSeeds) do
+        if seedArea(s) == "main" then seeds[#seeds + 1] = s end
+    end
+    if force then print("[SeedFarm] found " .. #seeds .. " main seeds") end
     local opts, map = {}, {}
     for _, s in ipairs(seeds) do
         local t = seedDisplayText(s)
@@ -1469,7 +1514,7 @@ local function refreshSeedList(force)
         if #seeds == 0 then setStatus("No seeds found!") end
     end
     local curUids = {}
-    for _, s in ipairs(seeds) do
+    for _, s in ipairs(allSeeds) do
         if s.uid then curUids[s.uid] = true end
         local isRare = s.isTopSeed or s.mutated or s.tier >= 4 or s.source == "halloween"
         if not firstScan and isRare and s.uid and not prevUids[s.uid] then
@@ -1490,7 +1535,7 @@ local function refreshSeedList(force)
             if updateSeedESP then pcall(updateSeedESP) end
         end
     end
-    if syncWorldESP then pcall(syncWorldESP, seeds) end
+    if syncWorldESP then pcall(syncWorldESP, allSeeds) end
     dropRebuilding = false
 end
 
@@ -1507,6 +1552,7 @@ task.spawn(function()
         pcall(function() refreshSeedList(false) end)
         pcall(function() refreshSpeedwayList(false) end)
         pcall(function() refreshImpList(false) end)
+        pcall(function() refreshHalloweenList(false) end)
     end
 end)
 
@@ -1598,7 +1644,10 @@ end
 
 FarmTab:CreateButton({
     Name = "📍 TP TO SEED",
-    Callback = doTeleport,
+    Callback = function()
+        if areaFarm.sel.main then selectedSeed = areaFarm.sel.main end
+        doTeleport()
+    end,
 })
 
 FarmTab:CreateButton({
@@ -1621,6 +1670,111 @@ FarmTab:CreateButton({
 -- SPEEDWAY TAB (speedway seeds as they spawn: SW* IDs + codex seed pads)
 --------------------------------------------------------------------------------
 local SpeedwayTab = Window:CreateTab("🏁 Speedway", 4483362458)
+
+do -- Halloween tab (v10.94): halloween-only seeds + scoped auto farm
+    local HalloweenTab = Window:CreateTab("👻 Halloween", 4483362458)
+    HalloweenTab:CreateSection("Halloween Seeds")
+    local halloweenByText = {}
+    local halloweenDropdown = HalloweenTab:CreateDropdown({
+        Name = "Select Halloween Seed",
+        Options = { "— press Refresh —" },
+        CurrentOption = { "— press Refresh —" },
+        MultipleOptions = false,
+        Callback = function(Options)
+            local sel = type(Options) == "table" and Options[1] or Options
+            local s = sel and halloweenByText[sel]
+            if s then
+                selectedSeed = s
+                areaFarm.sel.halloween = s
+                setStatus("Selected: " .. s.name)
+                print("[SeedFarm] selected halloween seed " .. s.name)
+                if updateSeedESP then pcall(updateSeedESP) end
+            end
+        end,
+    })
+    local lastHalloweenSig = ""
+    local halloweenRebuilding = false
+    function refreshHalloweenList(force)
+        if halloweenRebuilding then return end
+        halloweenRebuilding = true
+        local seeds = {}
+        for _, s in ipairs(findWildSeeds()) do
+            if seedArea(s) == "halloween" then
+                seeds[#seeds + 1] = s
+            end
+        end
+        if force then
+            print("[SeedFarm] found " .. #seeds .. " halloween seeds")
+        end
+        local opts, map = {}, {}
+        for _, s in ipairs(seeds) do
+            local t = seedDisplayText(s)
+            table.insert(opts, t)
+            map[t] = s
+        end
+        if #opts == 0 then opts = { "— no halloween seeds —" } end
+        local sig = table.concat(opts, "|")
+        if force or sig ~= lastHalloweenSig then
+            lastHalloweenSig = sig
+            halloweenByText = map
+            pcall(function() halloweenDropdown:Refresh(opts) end)
+        end
+        halloweenRebuilding = false
+    end
+    HalloweenTab:CreateButton({
+        Name = "🔄 Refresh Halloween Seeds",
+        Callback = function() refreshHalloweenList(true) end,
+    })
+    HalloweenTab:CreateButton({
+        Name = "📍 TP TO SEED",
+        Callback = function()
+            if areaFarm.sel.halloween then
+                selectedSeed = areaFarm.sel.halloween
+            end
+            doTeleport()
+        end,
+    })
+    HalloweenTab:CreateButton({
+        Name = "👑 TP TO BEST",
+        Callback = function()
+            local hw = {}
+            for _, s in ipairs(findWildSeeds()) do
+                if seedArea(s) == "halloween" then hw[#hw + 1] = s end
+            end
+            local best = bestSeed(hw)
+            if not best then
+                setStatus("No halloween seeds found!")
+                return
+            end
+            selectedSeed = best
+            areaFarm.sel.halloween = best
+            print("[SeedFarm] TP TO BEST HALLOWEEN -> "
+                .. seedDisplayText(best))
+            if updateSeedESP then pcall(updateSeedESP) end
+            doTeleport()
+        end,
+    })
+    HalloweenTab:CreateButton({
+        Name = "🏃 RUN BACK",
+        Callback = function() triggerRunback() end,
+    })
+    HalloweenTab:CreateButton({
+        Name = "⏹ STOP",
+        Callback = function()
+            if runningBack or runbackLoopActive then
+                stopRunback = true
+                setStatus("Stopping...")
+            end
+        end,
+    })
+    HalloweenTab:CreateLabel("Halloween seeds appear here as they spawn. Delivery walks to the nearest safe zone.")
+    HalloweenTab:CreateSection("Auto Farm")
+    areaFarm.toggles.halloween = HalloweenTab:CreateToggle({
+        Name = "Full Auto Farm",
+        CurrentValue = false,
+        Callback = function(v) setAreaAutoFarm("halloween", v) end,
+    })
+end
 SpeedwayTab:CreateSection("Speedway Seeds")
 
 local function isSpeedwaySeed(s)
@@ -1652,6 +1806,7 @@ local speedwayDropdown = SpeedwayTab:CreateDropdown({
                 or selectedSeed.uid ~= s.uid
                 or selectedSeed.name ~= s.name
             selectedSeed = s
+            areaFarm.sel.speedway = s
             if changed then
                 setStatus("Selected: " .. s.name)
                 print("[SeedFarm] selected speedway seed " .. s.name .. " (" .. s.source .. ")")
@@ -1696,7 +1851,12 @@ SpeedwayTab:CreateButton({
 
 SpeedwayTab:CreateButton({
     Name = "📍 TP TO SPEEDWAY SEED",
-    Callback = doTeleport,
+    Callback = function()
+        if areaFarm.sel.speedway then
+            selectedSeed = areaFarm.sel.speedway
+        end
+        doTeleport()
+    end,
 })
 
 SpeedwayTab:CreateButton({
@@ -1716,6 +1876,13 @@ SpeedwayTab:CreateButton({
 })
 
 SpeedwayTab:CreateLabel("Speedway seeds appear here as they spawn.")
+
+SpeedwayTab:CreateSection("Auto Farm")
+areaFarm.toggles.speedway = SpeedwayTab:CreateToggle({
+    Name = "Full Auto Farm",
+    CurrentValue = false,
+    Callback = function(v) setAreaAutoFarm("speedway", v) end,
+})
 
 SpeedwayTab:CreateSection("Chambers")
 
@@ -2635,14 +2802,10 @@ FarmTab:CreateToggle({
 })
 
 FarmTab:CreateSection("Auto Farm")
-FarmTab:CreateToggle({
+areaFarm.toggles.main = FarmTab:CreateToggle({
     Name = "Full Auto Farm",
     CurrentValue = false,
-    Callback = function(v)
-        autoFarmOn = v
-        print("[SeedFarm] full auto farm " .. (v and "ON" or "OFF"))
-        if v then setStatus("Auto Farm ON - hunting " .. autoFarmMinTier) end
-    end,
+    Callback = function(v) setAreaAutoFarm("main", v) end,
 })
 FarmTab:CreateToggle({
     Name = "🏃 Treadmill When Idle",
@@ -2932,7 +3095,7 @@ local function farmTarget()
     local best = nil
     for _, s in ipairs(findWildSeeds()) do
         local blocked = s.uid and farmBlacklist[s.uid] and os.clock() < farmBlacklist[s.uid]
-        if not blocked then
+        if not blocked and seedArea(s) == areaFarm.area then
             local ok = false
             if autoFarmMinTier == "Any" then ok = true
             elseif autoFarmMinTier == "T2+" then ok = s.tier >= 2
@@ -3171,6 +3334,7 @@ print("[SeedFarm] LoadConfiguration: " .. tostring(cfgOk) .. (cfgOk and "" or ("
 
 refreshSeedList(true)
 pcall(function() refreshSpeedwayList(true) end)
+pcall(function() refreshHalloweenList(true) end)
 local hookOk, hookErr = pcall(function()
     local RS = game:GetService("ReplicatedStorage")
     local remote = nil
@@ -3272,7 +3436,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.92 loaded - pick a seed!")
+print("[SeedFarm] v10.94 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -4869,6 +5033,50 @@ end))
         while true do
             task.wait(5)
             if psAutoHarvest then pcall(psTryHarvest) end
+        end
+    end)
+
+    -- AUTO-GROW (v10.93): RequestGrowAllSeeds() takes NO arguments -
+    -- SNIFF capture Oct 23 2026 (Daniel fired Grow All by hand and the
+    -- hook logged an empty call). While ON, fires it every 30s whenever
+    -- he has crops in the ground. Whether the game charges anything per
+    -- grow is unknown, so: starts OFF, first fire prints once, the
+    -- 30s loop stays silent after that.
+    local psAutoGrow = false
+    local psGrowFiredOnce = false
+    PlantTab:CreateToggle({
+        Name = "🌱 AUTO-GROW",
+        CurrentValue = false,
+        Callback = function(v)
+            psAutoGrow = v
+            psSetStatus(v and "Auto-grow ON (Grow All every 30s)"
+                or "Auto-grow off")
+        end,
+    })
+    task.spawn(function()
+        while true do
+            task.wait(30)
+            if psAutoGrow then
+                pcall(function()
+                    local soil = psSoilCache
+                    if not soil then
+                        soil = getSoil()
+                        if soil then psSoilCache = soil end
+                    end
+                    if not soil then return end
+                    local crops = psMyCropModels(soil)
+                    if #crops > 0 and growAllRemote then
+                        growAllRemote:FireServer()
+                        if not psGrowFiredOnce then
+                            psGrowFiredOnce = true
+                            print("[PlantSeed] auto-grow: fired "
+                                .. "RequestGrowAllSeeds() for " .. #crops
+                                .. " crops (repeats silently every 30s "
+                                .. "while ON)")
+                        end
+                    end
+                end)
+            end
         end
     end)
 
