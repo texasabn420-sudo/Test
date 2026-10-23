@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.103 starting...")
+print("[SeedFarm] v10.104 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -1201,6 +1201,38 @@ local function findSafeZones()
     return zones
 end
 
+-- Halloween sanctuaries each carry a Part named "SanctuaryBeacon" -
+-- the light column Daniel calls the light beacon (his explorer saves,
+-- Oct 23 2026: a HalloweenSanctuaries model with one beacon per
+-- sanctuary area, Beams named SanctuaryColumn / SanctuaryColumnCore).
+-- Found live by name; cached only once a scan actually finds some, so
+-- an early scan before the area streams in never poisons the cache.
+local beaconCache = nil
+local function findBeacons()
+    if beaconCache then return beaconCache end
+    local out = {}
+    local scope = nil
+    pcall(function()
+        scope = Workspace:FindFirstChild("HalloweenSanctuaries", true)
+    end)
+    local searchIn = scope or Workspace
+    pcall(function()
+        for _, d in ipairs(searchIn:GetDescendants()) do
+            if d.Name == "SanctuaryBeacon" and d:IsA("BasePart") then
+                local area = "sanctuary"
+                local anc = d.Parent
+                while anc and anc ~= searchIn do
+                    if anc:IsA("Model") then area = anc.Name end
+                    anc = anc.Parent
+                end
+                out[#out + 1] = { inst = d, pos = d.Position, area = area }
+            end
+        end
+    end)
+    if #out > 0 then beaconCache = out end
+    return out
+end
+
 -- one console listing shortly after load, so the found zones (Halloween
 -- included) are visible without needing a delivery first
 task.spawn(function()
@@ -1211,6 +1243,11 @@ task.spawn(function()
     for i, z in ipairs(zones) do
         if i > 12 then print("[SeedFarm]   ... and " .. (#zones - 12) .. " more") break end
         print("[SeedFarm]   safe zone '" .. z.name .. "' at " .. tostring(z.pos))
+    end
+    local beacons = findBeacons()
+    print("[SeedFarm] sanctuary beacons found: " .. #beacons)
+    for _, b in ipairs(beacons) do
+        print("[SeedFarm]   beacon at " .. b.area .. " - " .. tostring(b.pos))
     end
 end)
 local runbackLoopActive = false
@@ -1248,20 +1285,48 @@ local function runToSafeZone()
             lastPickupHalloween = false
             if not pinPos then
                 hwTargets = {}
+                -- stage 1: the nearest sanctuary's light beacon
+                -- (v10.104, Daniel's spec: fly to a beacon and drop
+                -- into its safe zone). A beacon paired with the
+                -- nearest non-main safe zone wins; beacons also cover
+                -- the case where no zone is tagged nearby. Stage 2 is
+                -- always the main safe zone.
                 local zones = findSafeZones()
                 table.sort(zones, function(a, b)
                     return (a.pos - root.Position).Magnitude
                         < (b.pos - root.Position).Magnitude
                 end)
+                local zoneTarget = nil
                 for _, z in ipairs(zones) do
                     if (z.pos - SAFE_ZONE).Magnitude >= 15 then
-                        hwTargets[#hwTargets + 1] = {
-                            pos = z.pos,
-                            label = "safe zone '" .. z.name .. "'",
-                        }
+                        zoneTarget = z
                         break -- nearest non-main zone only
                     end
                 end
+                local beacons = findBeacons()
+                table.sort(beacons, function(a, b)
+                    return (a.pos - root.Position).Magnitude
+                        < (b.pos - root.Position).Magnitude
+                end)
+                local stage1 = nil
+                if beacons[1] and (not zoneTarget
+                    or (beacons[1].pos - zoneTarget.pos).Magnitude < 60) then
+                    stage1 = {
+                        pos = beacons[1].pos,
+                        label = "beacon at " .. beacons[1].area,
+                    }
+                elseif zoneTarget then
+                    stage1 = {
+                        pos = zoneTarget.pos,
+                        label = "safe zone '" .. zoneTarget.name .. "'",
+                    }
+                elseif beacons[1] then
+                    stage1 = {
+                        pos = beacons[1].pos,
+                        label = "beacon at " .. beacons[1].area,
+                    }
+                end
+                if stage1 then hwTargets[#hwTargets + 1] = stage1 end
                 hwTargets[#hwTargets + 1] = {
                     pos = SAFE_ZONE, label = "main safe zone",
                 }
@@ -1528,8 +1593,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.103",
-    LoadingTitle = "Seed Farm v10.103",
+    Name = "🌱 Seed Farm v10.104",
+    LoadingTitle = "Seed Farm v10.104",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -3337,7 +3402,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.103 loaded - pick a seed!")
+print("[SeedFarm] v10.104 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
