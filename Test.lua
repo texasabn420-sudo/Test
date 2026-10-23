@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.91 starting...")
+print("[SeedFarm] v10.92 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -683,6 +683,7 @@ local function findWildSeeds()
         end
         local tstr = {}
         for t, n in pairs(tiers) do table.insert(tstr, t .. "=" .. n) end
+        table.sort(tstr) -- stable order: pairs() shuffling must not fake a change
         local scanSig = string.format("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d|%s",
             n1, n2, n3, n4, n4b, n5, n6, n6b, n7, #seeds,
             table.concat(tstr, " "))
@@ -1362,8 +1363,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.91",
-    LoadingTitle = "Seed Farm v10.91",
+    Name = "🌱 Seed Farm v10.92",
+    LoadingTitle = "Seed Farm v10.92",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -3226,13 +3227,52 @@ local hookOk, hookErr = pcall(function()
         print("[SeedFarm] InventorySeedCarryStateChanged hooked - delivery confirmation on")
         selfReport.deliveryHook = "hooked"
     end
+    local bhRemote = nil
+    for _, d in ipairs(RS:GetDescendants()) do
+        if d.Name == "BlackHoleSeedSecured" and d:IsA("RemoteEvent") then
+            bhRemote = d
+            break
+        end
+    end
+    if bhRemote then
+        bhRemote.OnClientEvent:Connect(function()
+            if not stillAlive() then return end
+            -- count it as Daniel's bank only if he was the carrier: the
+            -- delivery trail is live, or the seed still names him
+            local mine = bhTrailPos ~= nil
+            if not mine then
+                pcall(function()
+                    for _, t in ipairs(game:GetService("CollectionService")
+                        :GetTagged("BlackHoleSeed")) do
+                        if t:GetAttribute("BlackHoleCarrierUserId")
+                            == LocalPlayer.UserId then
+                            mine = true
+                        end
+                    end
+                end)
+            end
+            if mine then
+                lastDeliverySeq += 1
+                sessionStats.total += 1
+                sessionStats.byTier["T4Guardian"] =
+                    (sessionStats.byTier["T4Guardian"] or 0) + 1
+                sessionStats.update()
+                print("[SeedFarm] 🕳️ Black Hole seed SECURED - banked "
+                    .. "at your safe zone")
+            end
+        end)
+        print("[SeedFarm] BlackHoleSeedSecured hooked - BH delivery confirmation on")
+        selfReport.bhHook = "hooked"
+    else
+        selfReport.bhHook = "not found"
+    end
 end)
 if not hookOk then
     selfReport.carryHook = "ERROR"
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.91 loaded - pick a seed!")
+print("[SeedFarm] v10.92 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -3261,6 +3301,8 @@ task.delay(12, function()
         .. " found")
     print("[SeedFarm] catalog: " .. (selfReport.catalog or "not run yet"))
     print("[SeedFarm] black hole: " .. bh)
+    print("[SeedFarm] black hole secured hook: "
+        .. (selfReport.bhHook or "not hooked"))
     print("[SeedFarm] ===== end self-report =====")
 end)
 
@@ -3371,14 +3413,21 @@ local RS = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 
 local equipRemote, plantRemote = nil, nil
+local growSeedRemote, growAllRemote = nil, nil
 for _, d in ipairs(RS:GetDescendants()) do
     if d:IsA("RemoteEvent") then
         if d.Name == "RequestEquipSeed" then equipRemote = d
-        elseif d.Name == "RequestPlantSeed" then plantRemote = d end
+        elseif d.Name == "RequestPlantSeed" then plantRemote = d
+        elseif d.Name == "RequestGrowSeed" then growSeedRemote = d
+        elseif d.Name == "RequestGrowAllSeeds" then growAllRemote = d end
     end
 end
 print("[PlantSeed] equip remote: " .. (equipRemote and "found" or "NOT FOUND"))
 print("[PlantSeed] plant remote: " .. (plantRemote and "found" or "NOT FOUND"))
+print("[PlantSeed] grow remotes: RequestGrowSeed="
+    .. (growSeedRemote and "found" or "NOT FOUND")
+    .. " RequestGrowAllSeeds="
+    .. (growAllRemote and "found" or "NOT FOUND"))
 
 local function getRoot()
     local c = player.Character
@@ -4382,7 +4431,7 @@ end
 local sniffOn = false
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    if (sniffOn or learnOn) and getnamecallmethod() == "FireServer" and (self == equipRemote or self == plantRemote) then
+    if (sniffOn or learnOn) and getnamecallmethod() == "FireServer" and (self == equipRemote or self == plantRemote or self == growSeedRemote or self == growAllRemote) then
         if learnOn and self == equipRemote then
             local uid = ...
             if type(uid) == "string" and findGuid(uid) then
