@@ -1,6 +1,6 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.105 starting...")
+print("[SeedFarm] v10.106 starting...")
 
 local Rayfield = nil
 pcall(function()
@@ -1211,14 +1211,17 @@ end
 -- Found live by name; cached only once a scan actually finds some, so
 -- an early scan before the area streams in never poisons the cache.
 local beaconCache = nil
-local function findBeacons()
+local function findBeacons(deep)
     if beaconCache then return beaconCache end
     local out = {}
     local scope = nil
     pcall(function()
         scope = Workspace:FindFirstChild("HalloweenSanctuaries", true)
     end)
-    local searchIn = scope or Workspace
+    -- without the model, only a caller that knows halloween content
+    -- is streamed (a halloween delivery) pays for a workspace scan
+    local searchIn = scope or (deep and Workspace or nil)
+    if not searchIn then return out end
     pcall(function()
         for _, d in ipairs(searchIn:GetDescendants()) do
             if d.Name == "SanctuaryBeacon" and d:IsA("BasePart") then
@@ -1284,8 +1287,12 @@ local function runToSafeZone()
         -- 3s, the arrival branch below retargets to the main safe zone
         -- and keeps walking. Pin set = pin stays the only target.
         local hwTargets = nil
-        if lastPickupHalloween and os.clock() - lastPickupHalloweenAt < 30 then
-            lastPickupHalloween = false
+        -- snapshot, do NOT consume the flag here (v10.106): if this
+        -- attempt fails, the triggerRunback retry must still know the
+        -- carry was a halloween one. The flag clears on delivery (tail).
+        local hwPickup = lastPickupHalloween
+            and (os.clock() - lastPickupHalloweenAt < 30)
+        if hwPickup then
             if not pinPos then
                 hwTargets = {}
                 -- stage 1: the nearest sanctuary's light beacon
@@ -1306,7 +1313,7 @@ local function runToSafeZone()
                         break -- nearest non-main zone only
                     end
                 end
-                local beacons = findBeacons()
+                local beacons = findBeacons(true)
                 table.sort(beacons, function(a, b)
                     return (a.pos - root.Position).Magnitude
                         < (b.pos - root.Position).Magnitude
@@ -1339,6 +1346,16 @@ local function runToSafeZone()
                 print("[SeedFarm] halloween delivery: flying to "
                     .. hwTargets[1].label .. " (teleport does not bank)")
             end
+        end
+
+        print(string.format("[SeedFarm] runback plan: mode=%s target=%s",
+            flyMode and "FLY" or "walk",
+            hwTargets and hwTargets[1].label
+                or (pinPos and "pin" or "main safe zone")))
+        if hwTargets then
+            print(string.format(
+                "[SeedFarm] runback plan detail: zones=%d beacons=%d",
+                #findSafeZones(), #findBeacons()))
         end
 
         -- move on the very first frame: speed up, hop to unstick, go
@@ -1515,6 +1532,7 @@ local function runToSafeZone()
             if h then h.WalkSpeed = savedSpeed end
         end)
     end
+    if result == true then lastPickupHalloween = false end
     runningBack = false
     if not ok then
         print("[SeedFarm] runback error: " .. tostring(result))
@@ -1596,8 +1614,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.105",
-    LoadingTitle = "Seed Farm v10.105",
+    Name = "🌱 Seed Farm v10.106",
+    LoadingTitle = "Seed Farm v10.106",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -3320,6 +3338,13 @@ local hookOk, hookErr = pcall(function()
                 lastCarryData = data
                 lastCarrySeq += 1
                 lastCarriedUid = data.uid
+                if data.seedId and HALLOWEEN_SEED_IDS[data.seedId] then
+                    lastPickupHalloween = true
+                    lastPickupHalloweenAt = os.clock()
+                    print("[SeedFarm] carry is a halloween seed ("
+                        .. tostring(data.seedId)
+                        .. ") - fly delivery armed")
+                end
                 if (autoRunEnabled or autoFarmOn or manualTpPending) and not runningBack and not runbackLoopActive then
                     manualTpPending = false
                     runbackArmed = false
@@ -3405,7 +3430,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.105 loaded - pick a seed!")
+print("[SeedFarm] v10.106 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
