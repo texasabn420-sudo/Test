@@ -1,9 +1,9 @@
 -- Seed Farm (manual)
 
-print("[SeedFarm] v10.106 starting...")
+print("[SeedFarm] v10.107 starting...")
 
 local Rayfield = nil
-pcall(function()
+local function tryLoadRayfield()
     local src = game:HttpGet("https://sirius.menu/rayfield")
     -- Rayfield leak patch (v10.95): SetDropdownOptions connects a theme
     -- handler for EVERY dropdown option that keeps indexing the option
@@ -40,8 +40,20 @@ pcall(function()
     end
     print("[SeedFarm] rayfield leak patch: "
         .. (patched and "applied" or "anchor missed - unpatched"))
-    Rayfield = chunk()
-end)
+    return chunk()
+end
+-- retry loop (v10.107): a single failed download (sirius.menu hiccup,
+-- connection drop) used to kill the whole load; now it retries twice
+for attempt = 1, 3 do
+    local okLoad, result = pcall(tryLoadRayfield)
+    if okLoad and result then
+        Rayfield = result
+        break
+    end
+    print("[SeedFarm] rayfield load attempt " .. attempt .. " failed"
+        .. (attempt < 3 and " - retrying in 2s" or ""))
+    if attempt < 3 then task.wait(2) end
+end
 if not Rayfield then
     print("[SeedFarm] ERROR: Rayfield failed to load (internet/executor?) - old copy left running")
     return
@@ -1614,8 +1626,8 @@ local VALID_THEMES = { Default = true, Green = true, DarkBlue = true, Amethyst =
 if getgenv().__SeedFarmTheme and not VALID_THEMES[getgenv().__SeedFarmTheme] then getgenv().__SeedFarmTheme = nil end
 
 local Window = Rayfield:CreateWindow({
-    Name = "🌱 Seed Farm v10.106",
-    LoadingTitle = "Seed Farm v10.106",
+    Name = "🌱 Seed Farm v10.107",
+    LoadingTitle = "Seed Farm v10.107",
     LoadingSubtitle = "Rayfield GUI",
     Theme = getgenv().__SeedFarmTheme or "Green",
     ToggleUIKeybind = Enum.KeyCode.RightControl,
@@ -3430,7 +3442,7 @@ if not hookOk then
     print("[SeedFarm] carry hook ERROR: " .. tostring(hookErr))
 end
 
-print("[SeedFarm] v10.106 loaded - pick a seed!")
+print("[SeedFarm] v10.107 loaded - pick a seed!")
 
 -- startup self-report printer (v10.90): ~12s after load (catalog check
 -- reports at 8s, safe zones at 6s), print every subsystem's status in
@@ -5050,4 +5062,3 @@ SettingsTab:CreateSlider({
 
 local cfgOk, cfgErr = pcall(function() Rayfield:LoadConfiguration() end)
 print("[SeedFarm] LoadConfiguration: " .. tostring(cfgOk) .. (cfgOk and "" or (" - " .. tostring(cfgErr))))
-
